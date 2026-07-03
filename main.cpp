@@ -82,13 +82,21 @@ void mergeCsv(const fs::path& input_dir, const fs::path& output_file) {
             " (error: " + strerror(err) + ")");
     }
 
+
+    uintmax_t processed_bytes = 0;
+    const size_t total_files = csv_files.size();
+
+
     for (size_t i = 0; i < csv_files.size(); ++i) {
         std::ifstream in(csv_files[i], std::ios::binary);
         if (!in.is_open()) {
             throw std::runtime_error("Cannot open input file: " + csv_files[i].string());
         }
         Policy::apply(in, (i == 0));
+        uintmax_t file_size = fs::file_size(csv_files[i]);
         out << in.rdbuf();
+
+
         if (out.fail()) {
             throw std::runtime_error("Write failed! Possibly disk full or device error at file: " + csv_files[i].string());
         }
@@ -96,7 +104,20 @@ void mergeCsv(const fs::path& input_dir, const fs::path& output_file) {
         if (out.fail()) {
             throw std::runtime_error("Flush failed! Disk full or device error.");
         }
+
+        processed_bytes += file_size;
+        if (total_size > 0) {
+            int percent = static_cast<int>((processed_bytes * 100) / total_size);
+            std::cerr << "\rProgress: [" << (i + 1) << "/" << total_files << "] "
+                << percent << "% - " << csv_files[i].filename().string() << "    ";
+        }
+        else {
+            std::cerr << "\rProgress: [" << (i + 1) << "/" << total_files << "] "
+                << csv_files[i].filename().string() << "    ";
+        }
+        std::cerr.flush();
     }
+    std::cerr << std::endl;
 }
 
 
