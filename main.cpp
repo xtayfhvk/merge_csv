@@ -3,6 +3,7 @@
 // C++17, 编译: g++ -std=c++17 -pthread main.cpp -lstdc++fs -o merge_csv
 // 或 VS2022 直接编译
 
+
 #include <iostream>
 #include <fstream>
 #include <filesystem>
@@ -137,62 +138,122 @@ fs::path generate_timestamp_filename(const fs::path& dir, const std::string& pre
     return dir / ss.str();
 }
 
-// ------------------- 分组算法（多文件模式）修正版 -------------------
+// ------------------- DFS 搜索最优子集（不超过阈值，尽量接近） -------------------
+struct DfsResult {
+    std::vector<size_t> indices;
+    uintmax_t sum;
+};
+
+void dfs_best_subset(size_t idx,
+    uintmax_t current_sum,
+    std::vector<size_t>& chosen,
+    DfsResult& best,
+    const std::vector<uintmax_t>& sizes,
+    const std::vector<uintmax_t>& suffix_sum,
+    uintmax_t threshold) {
+    // 更新最优（只要当前和大于之前的最优和，且不超过阈值）
+    if (current_sum > best.sum && current_sum <= threshold) {
+        best.sum = current_sum;
+        best.indices = chosen;
+    }
+    if (idx >= sizes.size()) return;
+
+    // 剪枝：即使全选也无法超过当前最优和，则返回
+    if (current_sum + suffix_sum[idx] <= best.sum) return;
+
+    // 不选当前文件
+    dfs_best_subset(idx + 1, current_sum, chosen, best, sizes, suffix_sum, threshold);
+
+    // 选当前文件（如果加上不超过阈值）
+    if (current_sum + sizes[idx] <= threshold) {
+        chosen.push_back(idx);
+        dfs_best_subset(idx + 1, current_sum + sizes[idx], chosen, best, sizes, suffix_sum, threshold);
+        chosen.pop_back();
+    }
+}
+
+// 从剩余小文件列表中找到最优的一组（总和最大且 <= 阈值）
+std::vector<size_t> find_best_group(const std::vector<std::pair<fs::path, uintmax_t>>& small_files,
+    uintmax_t threshold) {
+    if (small_files.empty()) return {};
+
+    std::vector<uintmax_t> sizes;
+    sizes.reserve(small_files.size());
+    for (const auto& p : small_files) {
+        sizes.push_back(p.second);
+    }
+
+    // 计算后缀和（用于剪枝）
+    std::vector<uintmax_t> suffix_sum(sizes.size() + 1, 0);
+    for (int i = static_cast<int>(sizes.size()) - 1; i >= 0; --i) {
+        suffix_sum[i] = suffix_sum[i + 1] + sizes[i];
+    }
+
+    DfsResult best;
+    best.sum = 0;
+    std::vector<size_t> chosen;
+    dfs_best_subset(0, 0, chosen, best, sizes, suffix_sum, threshold);
+
+    // 如果 best 为空（理论上不会，因为所有文件都 < threshold），则返回 {0} 作为兜底
+    if (best.indices.empty() && !small_files.empty()) {
+        best.indices.push_back(0);
+        best.sum = sizes[0];
+    }
+    return best.indices;
+}
+
+// ------------------- 分组算法（DFS + 剪枝，安全删除） -------------------
 std::vector<std::vector<fs::path>> group_files_by_size(
     const std::vector<std::pair<fs::path, uintmax_t>>& files,
     uintmax_t threshold = 1ULL << 30) // 1 GB
 {
     std::vector<std::vector<fs::path>> groups;
-    std::vector<std::pair<fs::path, uintmax_t>> small_files;
-    std::vector<std::pair<fs::path, uintmax_t>> large_files;
 
-    // 分离超大文件（≥ threshold）和小文件
-    for (const auto& [path, size] : files) {
-        if (size >= threshold) {
-            large_files.push_back({ path, size });
+    // 分离超大文件（>= 阈值）和小文件
+    std::vector<std::pair<fs::path, uintmax_t>> small_files;
+    for (const auto& item : files) {
+        if (item.second >= threshold) {
+            groups.push_back({ item.first });
         }
         else {
-            small_files.push_back({ path, size });
+            small_files.push_back(item);
         }
     }
 
-    // 超大文件单独成组
-    for (const auto& [path, size] : large_files) {
-        groups.push_back({ path });
-    }
-
-    // 对小文件按大小降序排序（便于贪心）
+    // 对小文件按大小降序排序（有利于DFS剪枝）
     std::sort(small_files.begin(), small_files.end(),
         [](const auto& a, const auto& b) { return a.second > b.second; });
 
-    // 修正后的贪心分组：
-    uintmax_t current_sum = 0;
-    std::vector<fs::path> current_group;
-
-    for (const auto& [path, size] : small_files) {
-        if (current_group.empty()) {
-            current_group.push_back(path);
-            current_sum = size;
+    // 循环：每次从剩余小文件中选出一组最优子集
+    while (!small_files.empty()) {
+        auto best_indices = find_best_group(small_files, threshold);
+        if (best_indices.empty()) {
+            // 安全兜底：取第一个文件
+            groups.push_back({ small_files[0].first });
+            small_files.erase(small_files.begin());
+            continue;
         }
-        else {
-            // 如果加上当前文件会达到或超过阈值，则将当前文件加入并关闭组
-            if (current_sum + size >= threshold) {
-                current_group.push_back(path);
-                current_sum += size;
-                groups.push_back(std::move(current_group));
-                current_group.clear();
-                current_sum = 0;
+
+        // 构建组
+        std::vector<fs::path> group;
+        for (size_t idx : best_indices) {
+            // 再次确保索引有效
+            if (idx >= small_files.size()) {
+                throw std::runtime_error("Internal error: invalid index in best_indices");
             }
-            else {
-                current_group.push_back(path);
-                current_sum += size;
+            group.push_back(small_files[idx].first);
+        }
+        groups.push_back(std::move(group));
+
+        // **安全删除方式**：重建 remaining 容器，避免索引越界
+        std::vector<std::pair<fs::path, uintmax_t>> remaining;
+        for (size_t i = 0; i < small_files.size(); ++i) {
+            // 如果 i 不在 best_indices 中，则保留
+            if (std::find(best_indices.begin(), best_indices.end(), i) == best_indices.end()) {
+                remaining.push_back(small_files[i]);
             }
         }
-    }
-
-    // 处理最后一组（即使小于阈值也单独输出，不再并入前一组）
-    if (!current_group.empty()) {
-        groups.push_back(std::move(current_group));
+        small_files.swap(remaining);
     }
 
     return groups;
