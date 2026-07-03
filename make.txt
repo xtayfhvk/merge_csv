@@ -1,1 +1,21 @@
-g++  -std=c++17 -lstdc++fs   main.cpp  -o  merged_csv
+
+
+// merge_csv.cpp
+// C++17, 编译: g++ -std=c++17 -pthread main.cpp -lstdc++fs -o merge_csv
+// 或 VS2022 直接编译
+
+
+# 使用默认阈值 1GB
+merge_csv.exe C:\input C:\output
+
+# 指定 mode 为 single，其他默认
+merge_csv.exe C:\input C:\output single
+
+# 指定阈值 500MB，mode 使用 multi（默认）
+merge_csv.exe C:\input C:\output multi 500
+
+# 指定阈值 2GB（2048MB）和前缀 mydata
+merge_csv.exe C:\input C:\output multi 2048 mydata
+
+# 单文件模式并指定前缀
+merge_csv.exe C:\input C:\output single 1024 mydata
