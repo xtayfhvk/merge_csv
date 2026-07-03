@@ -3,7 +3,6 @@
 // C++17, 编译: g++ -std=c++17 -pthread main.cpp -lstdc++fs -o merge_csv
 // 或 VS2022 直接编译
 
-
 #include <iostream>
 #include <fstream>
 #include <filesystem>
@@ -151,20 +150,18 @@ void dfs_best_subset(size_t idx,
     const std::vector<uintmax_t>& sizes,
     const std::vector<uintmax_t>& suffix_sum,
     uintmax_t threshold) {
-    // 更新最优（只要当前和大于之前的最优和，且不超过阈值）
     if (current_sum > best.sum && current_sum <= threshold) {
         best.sum = current_sum;
         best.indices = chosen;
     }
     if (idx >= sizes.size()) return;
 
-    // 剪枝：即使全选也无法超过当前最优和，则返回
     if (current_sum + suffix_sum[idx] <= best.sum) return;
 
-    // 不选当前文件
+    // 不选
     dfs_best_subset(idx + 1, current_sum, chosen, best, sizes, suffix_sum, threshold);
 
-    // 选当前文件（如果加上不超过阈值）
+    // 选
     if (current_sum + sizes[idx] <= threshold) {
         chosen.push_back(idx);
         dfs_best_subset(idx + 1, current_sum + sizes[idx], chosen, best, sizes, suffix_sum, threshold);
@@ -172,7 +169,6 @@ void dfs_best_subset(size_t idx,
     }
 }
 
-// 从剩余小文件列表中找到最优的一组（总和最大且 <= 阈值）
 std::vector<size_t> find_best_group(const std::vector<std::pair<fs::path, uintmax_t>>& small_files,
     uintmax_t threshold) {
     if (small_files.empty()) return {};
@@ -183,7 +179,6 @@ std::vector<size_t> find_best_group(const std::vector<std::pair<fs::path, uintma
         sizes.push_back(p.second);
     }
 
-    // 计算后缀和（用于剪枝）
     std::vector<uintmax_t> suffix_sum(sizes.size() + 1, 0);
     for (int i = static_cast<int>(sizes.size()) - 1; i >= 0; --i) {
         suffix_sum[i] = suffix_sum[i + 1] + sizes[i];
@@ -194,7 +189,6 @@ std::vector<size_t> find_best_group(const std::vector<std::pair<fs::path, uintma
     std::vector<size_t> chosen;
     dfs_best_subset(0, 0, chosen, best, sizes, suffix_sum, threshold);
 
-    // 如果 best 为空（理论上不会，因为所有文件都 < threshold），则返回 {0} 作为兜底
     if (best.indices.empty() && !small_files.empty()) {
         best.indices.push_back(0);
         best.sum = sizes[0];
@@ -205,11 +199,10 @@ std::vector<size_t> find_best_group(const std::vector<std::pair<fs::path, uintma
 // ------------------- 分组算法（DFS + 剪枝，安全删除） -------------------
 std::vector<std::vector<fs::path>> group_files_by_size(
     const std::vector<std::pair<fs::path, uintmax_t>>& files,
-    uintmax_t threshold = 1ULL << 30) // 1 GB
+    uintmax_t threshold)
 {
     std::vector<std::vector<fs::path>> groups;
 
-    // 分离超大文件（>= 阈值）和小文件
     std::vector<std::pair<fs::path, uintmax_t>> small_files;
     for (const auto& item : files) {
         if (item.second >= threshold) {
@@ -220,24 +213,19 @@ std::vector<std::vector<fs::path>> group_files_by_size(
         }
     }
 
-    // 对小文件按大小降序排序（有利于DFS剪枝）
     std::sort(small_files.begin(), small_files.end(),
         [](const auto& a, const auto& b) { return a.second > b.second; });
 
-    // 循环：每次从剩余小文件中选出一组最优子集
     while (!small_files.empty()) {
         auto best_indices = find_best_group(small_files, threshold);
         if (best_indices.empty()) {
-            // 安全兜底：取第一个文件
             groups.push_back({ small_files[0].first });
             small_files.erase(small_files.begin());
             continue;
         }
 
-        // 构建组
         std::vector<fs::path> group;
         for (size_t idx : best_indices) {
-            // 再次确保索引有效
             if (idx >= small_files.size()) {
                 throw std::runtime_error("Internal error: invalid index in best_indices");
             }
@@ -245,10 +233,9 @@ std::vector<std::vector<fs::path>> group_files_by_size(
         }
         groups.push_back(std::move(group));
 
-        // **安全删除方式**：重建 remaining 容器，避免索引越界
+        // 重建剩余列表
         std::vector<std::pair<fs::path, uintmax_t>> remaining;
         for (size_t i = 0; i < small_files.size(); ++i) {
-            // 如果 i 不在 best_indices 中，则保留
             if (std::find(best_indices.begin(), best_indices.end(), i) == best_indices.end()) {
                 remaining.push_back(small_files[i]);
             }
@@ -259,13 +246,19 @@ std::vector<std::vector<fs::path>> group_files_by_size(
     return groups;
 }
 
-// ------------------- 主函数 -------------------
+// ------------------- 主函数（支持阈值参数） -------------------
 int main(int argc, char* argv[]) {
     try {
+        // 默认参数
+        std::string mode = "multi";
+        uintmax_t threshold_mb = 1024;       // 默认 1GB
+        std::string prefix = "merged";
+
         if (argc < 3) {
-            std::cerr << "Usage: " << argv[0] << " <input_dir> <output_dir> [mode] [prefix]\n"
-                << "  mode: 'single' (merge all into one) or 'multi' (group by size), default 'multi'\n"
-                << "  prefix: output filename prefix, default 'merged'\n";
+            std::cerr << "Usage: " << argv[0] << " <input_dir> <output_dir> [mode] [threshold_mb] [prefix]\n"
+                << "  mode          : 'single' or 'multi', default 'multi'\n"
+                << "  threshold_mb  : positive integer (MB), default 1024\n"
+                << "  prefix        : output filename prefix, default 'merged'\n";
             return 1;
         }
 
@@ -285,14 +278,31 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        std::string mode = "multi";
-        std::string prefix = "merged";
+        // 解析可选参数（按顺序）
         if (argc >= 4) {
             mode = argv[3];
         }
         if (argc >= 5) {
-            prefix = argv[4];
+            threshold_mb = std::stoull(argv[4]);
+            if (threshold_mb == 0) {
+                std::cerr << "Error: threshold_mb must be positive." << std::endl;
+                return 1;
+            }
         }
+        if (argc >= 6) {
+            prefix = argv[5];
+        }
+
+        // 转换为字节（注意溢出检查）
+        const uintmax_t threshold_bytes = threshold_mb * 1024ULL * 1024ULL;
+        // 简单检查溢出（若阈值小于1MB则可能溢出，但一般不会）
+        if (threshold_bytes < threshold_mb) {
+            std::cerr << "Error: threshold too large (overflow)." << std::endl;
+            return 1;
+        }
+
+        std::cout << "Mode: " << mode << ", Threshold: " << threshold_mb << " MB ("
+            << threshold_bytes << " bytes), Prefix: " << prefix << std::endl;
 
         auto file_list = get_csv_files(input_dir);
         if (file_list.empty()) {
@@ -312,7 +322,7 @@ int main(int argc, char* argv[]) {
             std::cout << "Merge completed successfully!" << std::endl;
         }
         else if (mode == "multi") {
-            auto groups = group_files_by_size(file_list, 1ULL << 30);
+            auto groups = group_files_by_size(file_list, threshold_bytes);
             if (groups.empty()) {
                 std::cerr << "No groups to process." << std::endl;
                 return 1;
